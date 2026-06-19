@@ -47,6 +47,8 @@ function renderAll() {
   const s = actionPlan.summary;
   const gapDirection = s.projectedRoas >= s.currentRoas ? 'improves' : 'changes';
 
+  tableStates = {}; // reset sort/search state on every fresh brief
+
   wrap.innerHTML = `
     ${renderBriefingHeader(s)}
     ${renderSection1Scale()}
@@ -57,6 +59,8 @@ function renderAll() {
     ${renderSection6Reallocation()}
     <div class="footer">Generated from Consolidated Daily, Product &amp; Placement reports &middot; All figures in \u20b9</div>
   `;
+
+  wireSection1And2Tables();
 
   updateDataStatusBar();
 }
@@ -107,28 +111,99 @@ function renderBriefingHeader(s) {
 }
 
 // ============================================================
+// REUSABLE: SEARCHABLE / SORTABLE DIRECTIVE TABLE
+// ============================================================
+let tableStates = {}; // keyed by table id -> { sortKey, sortDir, search }
+
+function directiveTableHtml(tableId, items, columns, emptyMessage, searchPlaceholder) {
+  if (!tableStates[tableId]) {
+    const defaultCol = columns.find(c => c.defaultDir) || columns[0];
+    tableStates[tableId] = { sortKey: defaultCol.key, sortDir: defaultCol.defaultDir || 'desc', search: '' };
+  }
+  if (!items.length) {
+    return `<div class="empty-row">${emptyMessage}</div>`;
+  }
+  return `
+    <div class="dt-controls">
+      <div class="dt-search">
+        <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><circle cx="11" cy="11" r="7"/><path d="m21 21-4.3-4.3"/></svg>
+        <input type="text" id="${tableId}-search" placeholder="${searchPlaceholder}" value="${tableStates[tableId].search}">
+      </div>
+      <div class="dt-count" id="${tableId}-count"></div>
+    </div>
+    <div class="dt-wrap">
+      <table class="dt-table" id="${tableId}-table">
+        <thead><tr id="${tableId}-head"></tr></thead>
+        <tbody id="${tableId}-body"></tbody>
+      </table>
+    </div>
+  `;
+}
+
+function wireDirectiveTable(tableId, items, columns, rowClass) {
+  const state = tableStates[tableId];
+
+  function renderHead() {
+    document.getElementById(`${tableId}-head`).innerHTML = columns.map(col => `
+      <th class="${col.num ? 'num-col' : ''} ${state.sortKey === col.key ? 'sorted' : ''}" data-key="${col.key}">${col.label}</th>
+    `).join('');
+    document.querySelectorAll(`#${tableId}-head th`).forEach(th => {
+      th.addEventListener('click', () => {
+        const key = th.dataset.key;
+        if (state.sortKey === key) state.sortDir = state.sortDir === 'desc' ? 'asc' : 'desc';
+        else { state.sortKey = key; state.sortDir = 'desc'; }
+        renderHead();
+        renderBody();
+      });
+    });
+  }
+
+  function renderBody() {
+    let rows = [...items];
+    if (state.search) {
+      const q = state.search.toLowerCase();
+      rows = rows.filter(p => String(p.id).toLowerCase().includes(q) || p.name.toLowerCase().includes(q) || p.adgroup.toLowerCase().includes(q));
+    }
+    rows.sort((a, b) => {
+      let av = a[state.sortKey], bv = b[state.sortKey];
+      if (typeof av === 'string') { av = av.toLowerCase(); bv = bv.toLowerCase(); }
+      if (av < bv) return state.sortDir === 'asc' ? -1 : 1;
+      if (av > bv) return state.sortDir === 'asc' ? 1 : -1;
+      return 0;
+    });
+
+    document.getElementById(`${tableId}-count`).textContent = `Showing ${rows.length} of ${items.length}`;
+    document.getElementById(`${tableId}-body`).innerHTML = rows.map(p => `
+      <tr class="${rowClass}">${columns.map(col => col.render(p)).join('')}</tr>
+    `).join('');
+  }
+
+  renderHead();
+  renderBody();
+
+  const searchInput = document.getElementById(`${tableId}-search`);
+  searchInput.addEventListener('input', (e) => {
+    state.search = e.target.value;
+    renderBody();
+  });
+}
+
+// ============================================================
 // SECTION 1: SCALE STYLE IDS
 // ============================================================
+const SCALE_COLUMNS = [
+  { key: 'id', label: 'Style ID', render: p => `<td class="dt-id">${p.id}</td>` },
+  { key: 'name', label: 'Product', render: p => `<td class="dt-name">${truncName(stripBrandPrefix(p.name), 60)}</td>` },
+  { key: 'adgroup', label: 'Brand', render: p => `<td><span class="dt-adgroup">${p.adgroup}</span></td>` },
+  { key: 'roas', label: 'ROAS', num: true, defaultDir: 'desc', render: p => `<td class="num-col dt-roas scale">${p.roas.toFixed(2)}x</td>` },
+  { key: 'orders', label: 'Orders', num: true, render: p => `<td class="num-col">${p.orders}</td>` },
+  { key: 'revenue', label: 'Revenue', num: true, render: p => `<td class="num-col">${fmtINR(p.revenue)}</td>` },
+  { key: 'spend', label: 'Spend', num: true, render: p => `<td class="num-col">${fmtINR(p.spend)}</td>` },
+  { key: 'recommendedIncrease', label: 'Action', num: true, render: p => `<td class="num-col"><span class="dt-action-pill scale">+${p.recommendedIncrease}%</span></td>` },
+];
+
 function renderSection1Scale() {
   const items = actionPlan.scaleStyles;
-  const rows = items.length
-    ? items.map(p => `
-        <div class="directive-card scale">
-          <div class="dc-id">${p.id}</div>
-          <div class="dc-body">
-            <div class="dc-name">${truncName(stripBrandPrefix(p.name))}</div>
-            <div class="dc-meta"><span class="dc-adgroup">${p.adgroup}</span>${p.orders} orders &middot; ${fmtINR(p.revenue)} revenue</div>
-            <div class="dc-reason">${p.reason}</div>
-          </div>
-          <div class="dc-metric">
-            <div class="dc-roas scale num">${p.roas.toFixed(2)}x</div>
-            <div class="dc-metric-label">Current ROAS</div>
-          </div>
-          <div class="dc-action scale">+${p.recommendedIncrease}% Budget</div>
-        </div>
-      `).join('')
-    : `<div class="empty-row">No styles currently clear the SCALE bar (ROAS \u2265 8x, 2+ orders, \u20b9500+ revenue).</div>`;
-
   return `
     <div class="action-section">
       <div class="section-bar">
@@ -136,7 +211,7 @@ function renderSection1Scale() {
         <div class="section-title">Scale Style IDs</div>
         <div class="section-count">${items.length} styles</div>
       </div>
-      <div class="directive-grid">${rows}</div>
+      ${directiveTableHtml('scale-table', items, SCALE_COLUMNS, `No styles currently clear the SCALE bar (ROAS \u2265 8x, 2+ orders, \u20b9500+ revenue).`, 'Search Style ID or product name\u2026')}
     </div>
   `;
 }
@@ -144,26 +219,20 @@ function renderSection1Scale() {
 // ============================================================
 // SECTION 2: PAUSE STYLE IDS
 // ============================================================
+const PAUSE_COLUMNS = [
+  { key: 'id', label: 'Style ID', render: p => `<td class="dt-id">${p.id}</td>` },
+  { key: 'name', label: 'Product', render: p => `<td class="dt-name">${truncName(stripBrandPrefix(p.name), 60)}</td>` },
+  { key: 'adgroup', label: 'Brand', render: p => `<td><span class="dt-adgroup">${p.adgroup}</span></td>` },
+  { key: 'spend', label: 'Spend', num: true, defaultDir: 'desc', render: p => `<td class="num-col">${fmtINR(p.spend)}</td>` },
+  { key: 'clicks', label: 'Clicks', num: true, render: p => `<td class="num-col">${Math.round(p.clicks)}</td>` },
+  { key: 'orders', label: 'Orders', num: true, render: p => `<td class="num-col">${p.orders}</td>` },
+  { key: 'revenue', label: 'Revenue', num: true, render: p => `<td class="num-col">${fmtINR(p.revenue)}</td>` },
+  { key: 'roas', label: 'ROAS', num: true, render: p => `<td class="num-col dt-roas pause">${p.roas.toFixed(2)}x</td>` },
+  { key: 'reason', label: 'Reason', render: p => `<td class="dt-reason">${p.reason}</td>` },
+];
+
 function renderSection2Pause() {
   const items = actionPlan.pauseStyles;
-  const rows = items.length
-    ? items.map(p => `
-        <div class="directive-card pause">
-          <div class="dc-id">${p.id}</div>
-          <div class="dc-body">
-            <div class="dc-name">${truncName(stripBrandPrefix(p.name))}</div>
-            <div class="dc-meta"><span class="dc-adgroup">${p.adgroup}</span>${fmtINR(p.spend)} spend &middot; ${Math.round(p.clicks)} clicks &middot; ${p.orders} orders &middot; ${fmtINR(p.revenue)} revenue</div>
-            <div class="dc-reason">${p.reason}</div>
-          </div>
-          <div class="dc-metric">
-            <div class="dc-roas pause num">${p.roas.toFixed(2)}x</div>
-            <div class="dc-metric-label">Current ROAS</div>
-          </div>
-          <div class="dc-action pause">Pause Immediately</div>
-        </div>
-      `).join('')
-    : `<div class="empty-row">No styles currently trigger a PAUSE condition. Nothing to cut today.</div>`;
-
   return `
     <div class="action-section">
       <div class="section-bar">
@@ -171,9 +240,14 @@ function renderSection2Pause() {
         <div class="section-title">Pause Style IDs</div>
         <div class="section-count">${items.length} styles \u00b7 ${fmtINR(actionPlan.totalPauseSpend)} at risk</div>
       </div>
-      <div class="directive-grid">${rows}</div>
+      ${directiveTableHtml('pause-table', items, PAUSE_COLUMNS, `No styles currently trigger a PAUSE condition. Nothing to cut today.`, 'Search Style ID or product name\u2026')}
     </div>
   `;
+}
+
+function wireSection1And2Tables() {
+  if (actionPlan.scaleStyles.length) wireDirectiveTable('scale-table', actionPlan.scaleStyles, SCALE_COLUMNS, 'dt-row scale');
+  if (actionPlan.pauseStyles.length) wireDirectiveTable('pause-table', actionPlan.pauseStyles, PAUSE_COLUMNS, 'dt-row pause');
 }
 
 // ============================================================
