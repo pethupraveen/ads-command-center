@@ -111,55 +111,55 @@ function renderBriefingHeader(s) {
 }
 
 // ============================================================
-// REUSABLE: SEARCHABLE / SORTABLE DIRECTIVE TABLE
+// REUSABLE: SEARCHABLE / SORTABLE / PAGINATED / FILTERABLE TABLE
 // ============================================================
-let tableStates = {}; // keyed by table id -> { sortKey, sortDir, search }
+let tableStates = {}; // keyed by table id -> { sortKey, sortDir, search, page, activeFilter }
+const PAGE_SIZE = 12;
 
-function directiveTableHtml(tableId, items, columns, emptyMessage, searchPlaceholder) {
+function directiveTableHtml(tableId, items, columns, emptyMessage, searchPlaceholder, quickFilters) {
   if (!tableStates[tableId]) {
     const defaultCol = columns.find(c => c.defaultDir) || columns[0];
-    tableStates[tableId] = { sortKey: defaultCol.key, sortDir: defaultCol.defaultDir || 'desc', search: '' };
+    tableStates[tableId] = { sortKey: defaultCol.key, sortDir: defaultCol.defaultDir || 'desc', search: '', page: 1, activeFilter: 'all' };
   }
   if (!items.length) {
     return `<div class="empty-row">${emptyMessage}</div>`;
   }
+  const state = tableStates[tableId];
+  const chipsHtml = quickFilters && quickFilters.length
+    ? `<div class="dt-chips" id="${tableId}-chips">
+        <button class="dt-chip ${state.activeFilter === 'all' ? 'active' : ''}" data-filter="all">All</button>
+        ${quickFilters.map(f => `<button class="dt-chip ${state.activeFilter === f.key ? 'active' : ''}" data-filter="${f.key}">${f.label}</button>`).join('')}
+      </div>`
+    : '';
+
   return `
     <div class="dt-controls">
       <div class="dt-search">
         <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><circle cx="11" cy="11" r="7"/><path d="m21 21-4.3-4.3"/></svg>
-        <input type="text" id="${tableId}-search" placeholder="${searchPlaceholder}" value="${tableStates[tableId].search}">
+        <input type="text" id="${tableId}-search" placeholder="${searchPlaceholder}" value="${state.search}">
       </div>
       <div class="dt-count" id="${tableId}-count"></div>
     </div>
+    ${chipsHtml}
     <div class="dt-wrap">
       <table class="dt-table" id="${tableId}-table">
         <thead><tr id="${tableId}-head"></tr></thead>
         <tbody id="${tableId}-body"></tbody>
       </table>
     </div>
+    <div class="dt-pagination" id="${tableId}-pagination"></div>
   `;
 }
 
-function wireDirectiveTable(tableId, items, columns, rowClass) {
+function wireDirectiveTable(tableId, items, columns, rowClass, quickFilters) {
   const state = tableStates[tableId];
 
-  function renderHead() {
-    document.getElementById(`${tableId}-head`).innerHTML = columns.map(col => `
-      <th class="${col.num ? 'num-col' : ''} ${state.sortKey === col.key ? 'sorted' : ''}" data-key="${col.key}">${col.label}</th>
-    `).join('');
-    document.querySelectorAll(`#${tableId}-head th`).forEach(th => {
-      th.addEventListener('click', () => {
-        const key = th.dataset.key;
-        if (state.sortKey === key) state.sortDir = state.sortDir === 'desc' ? 'asc' : 'desc';
-        else { state.sortKey = key; state.sortDir = 'desc'; }
-        renderHead();
-        renderBody();
-      });
-    });
-  }
-
-  function renderBody() {
+  function getFilteredSorted() {
     let rows = [...items];
+    if (quickFilters && state.activeFilter !== 'all') {
+      const filter = quickFilters.find(f => f.key === state.activeFilter);
+      if (filter) rows = rows.filter(filter.test);
+    }
     if (state.search) {
       const q = state.search.toLowerCase();
       rows = rows.filter(p => String(p.id).toLowerCase().includes(q) || p.name.toLowerCase().includes(q) || p.adgroup.toLowerCase().includes(q));
@@ -171,11 +171,70 @@ function wireDirectiveTable(tableId, items, columns, rowClass) {
       if (av > bv) return state.sortDir === 'asc' ? 1 : -1;
       return 0;
     });
+    return rows;
+  }
 
-    document.getElementById(`${tableId}-count`).textContent = `Showing ${rows.length} of ${items.length}`;
-    document.getElementById(`${tableId}-body`).innerHTML = rows.map(p => `
-      <tr class="${rowClass}">${columns.map(col => col.render(p)).join('')}</tr>
+  function renderHead() {
+    document.getElementById(`${tableId}-head`).innerHTML = columns.map(col => `
+      <th class="${col.num ? 'num-col' : ''} ${state.sortKey === col.key ? 'sorted' : ''}" data-key="${col.key}">${col.label}</th>
     `).join('');
+    document.querySelectorAll(`#${tableId}-head th`).forEach(th => {
+      th.addEventListener('click', () => {
+        const key = th.dataset.key;
+        if (state.sortKey === key) state.sortDir = state.sortDir === 'desc' ? 'asc' : 'desc';
+        else { state.sortKey = key; state.sortDir = 'desc'; }
+        state.page = 1;
+        renderHead();
+        renderBody();
+      });
+    });
+  }
+
+  function renderPagination(totalRows) {
+    const totalPages = Math.max(1, Math.ceil(totalRows / PAGE_SIZE));
+    if (state.page > totalPages) state.page = totalPages;
+    const el = document.getElementById(`${tableId}-pagination`);
+    if (totalPages <= 1) { el.innerHTML = ''; return; }
+
+    const start = (state.page - 1) * PAGE_SIZE + 1;
+    const end = Math.min(state.page * PAGE_SIZE, totalRows);
+
+    let pageBtns = '';
+    for (let i = 1; i <= totalPages; i++) {
+      if (totalPages > 7 && i !== 1 && i !== totalPages && Math.abs(i - state.page) > 1) {
+        if (i === 2 || i === totalPages - 1) pageBtns += `<span class="dt-page-ellipsis">\u2026</span>`;
+        continue;
+      }
+      pageBtns += `<button class="dt-page-btn ${i === state.page ? 'active' : ''}" data-page="${i}">${i}</button>`;
+    }
+
+    el.innerHTML = `
+      <div class="dt-page-range">Rows ${start}\u2013${end} of ${totalRows}</div>
+      <div class="dt-page-controls">
+        <button class="dt-page-nav" id="${tableId}-prev" ${state.page === 1 ? 'disabled' : ''}>\u2039</button>
+        ${pageBtns}
+        <button class="dt-page-nav" id="${tableId}-next" ${state.page === totalPages ? 'disabled' : ''}>\u203a</button>
+      </div>
+    `;
+    document.getElementById(`${tableId}-prev`).addEventListener('click', () => { state.page--; renderBody(); });
+    document.getElementById(`${tableId}-next`).addEventListener('click', () => { state.page++; renderBody(); });
+    el.querySelectorAll('.dt-page-btn').forEach(btn => {
+      btn.addEventListener('click', () => { state.page = parseInt(btn.dataset.page, 10); renderBody(); });
+    });
+  }
+
+  function renderBody() {
+    const allRows = getFilteredSorted();
+    document.getElementById(`${tableId}-count`).textContent = `${allRows.length} of ${items.length}`;
+
+    const start = (state.page - 1) * PAGE_SIZE;
+    const pageRows = allRows.slice(start, start + PAGE_SIZE);
+
+    document.getElementById(`${tableId}-body`).innerHTML = pageRows.length
+      ? pageRows.map(p => `<tr class="${rowClass}">${columns.map(col => col.render(p)).join('')}</tr>`).join('')
+      : `<tr><td colspan="${columns.length}" class="dt-no-results">No rows match your search/filter.</td></tr>`;
+
+    renderPagination(allRows.length);
   }
 
   renderHead();
@@ -184,8 +243,70 @@ function wireDirectiveTable(tableId, items, columns, rowClass) {
   const searchInput = document.getElementById(`${tableId}-search`);
   searchInput.addEventListener('input', (e) => {
     state.search = e.target.value;
+    state.page = 1;
     renderBody();
   });
+
+  if (quickFilters && quickFilters.length) {
+    document.querySelectorAll(`#${tableId}-chips .dt-chip`).forEach(chip => {
+      chip.addEventListener('click', () => {
+        state.activeFilter = chip.dataset.filter;
+        state.page = 1;
+        document.querySelectorAll(`#${tableId}-chips .dt-chip`).forEach(c => c.classList.remove('active'));
+        chip.classList.add('active');
+        renderBody();
+      });
+    });
+  }
+}
+
+// ============================================================
+// REUSABLE: COLLAPSIBLE SECTION WRAPPER
+// Sections with many rows start collapsed; small sections stay open.
+// ============================================================
+let sectionCollapseState = {};
+const AUTO_COLLAPSE_THRESHOLD = 15;
+
+function collapsibleSectionWrap(sectionId, headerHtml, bodyHtml, itemCount, collapsedSummary) {
+  if (!(sectionId in sectionCollapseState)) {
+    sectionCollapseState[sectionId] = itemCount >= AUTO_COLLAPSE_THRESHOLD;
+  }
+  const collapsed = sectionCollapseState[sectionId];
+  return `
+    <div class="action-section">
+      <div class="section-bar collapsible" id="${sectionId}-toggle">
+        ${headerHtml}
+        <button class="section-chevron ${collapsed ? 'collapsed' : ''}" id="${sectionId}-chevron">
+          <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><path d="m6 9 6 6 6-6"/></svg>
+        </button>
+      </div>
+      ${collapsed ? `<div class="section-collapsed-summary" id="${sectionId}-summary">${collapsedSummary}</div>` : ''}
+      <div class="section-body" id="${sectionId}-body" style="${collapsed ? 'display:none;' : ''}">${bodyHtml}</div>
+    </div>
+  `;
+}
+
+function wireCollapsibleSection(sectionId, onExpandFirstTime) {
+  let expandedOnce = !sectionCollapseState[sectionId];
+
+  function toggle() {
+    const collapsed = !sectionCollapseState[sectionId];
+    sectionCollapseState[sectionId] = collapsed;
+    const body = document.getElementById(`${sectionId}-body`);
+    const chevron = document.getElementById(`${sectionId}-chevron`);
+    const summary = document.getElementById(`${sectionId}-summary`);
+    body.style.display = collapsed ? 'none' : '';
+    chevron.classList.toggle('collapsed', collapsed);
+    if (summary) summary.style.display = collapsed ? '' : 'none';
+    if (!collapsed && !expandedOnce && onExpandFirstTime) {
+      expandedOnce = true;
+      onExpandFirstTime();
+    }
+  }
+
+  document.getElementById(`${sectionId}-toggle`).addEventListener('click', toggle);
+  const summaryEl = document.getElementById(`${sectionId}-summary`);
+  if (summaryEl) summaryEl.addEventListener('click', toggle);
 }
 
 // ============================================================
@@ -196,24 +317,27 @@ const SCALE_COLUMNS = [
   { key: 'name', label: 'Product', render: p => `<td class="dt-name">${truncName(stripBrandPrefix(p.name), 60)}</td>` },
   { key: 'adgroup', label: 'Brand', render: p => `<td><span class="dt-adgroup">${p.adgroup}</span></td>` },
   { key: 'roas', label: 'ROAS', num: true, defaultDir: 'desc', render: p => `<td class="num-col dt-roas scale">${p.roas.toFixed(2)}x</td>` },
-  { key: 'orders', label: 'Orders', num: true, render: p => `<td class="num-col">${p.orders}</td>` },
+  { key: 'orders', label: 'Orders', num: true, render: p => `<td class="num-col dim">${p.orders}</td>` },
   { key: 'revenue', label: 'Revenue', num: true, render: p => `<td class="num-col">${fmtINR(p.revenue)}</td>` },
-  { key: 'spend', label: 'Spend', num: true, render: p => `<td class="num-col">${fmtINR(p.spend)}</td>` },
+  { key: 'spend', label: 'Spend', num: true, render: p => `<td class="num-col dim">${fmtINR(p.spend)}</td>` },
   { key: 'recommendedIncrease', label: 'Action', num: true, render: p => `<td class="num-col"><span class="dt-action-pill scale">+${p.recommendedIncrease}%</span></td>` },
+];
+
+const SCALE_QUICK_FILTERS = [
+  { key: 'top', label: 'ROAS \u2265 15x', test: p => p.roas >= 15 },
+  { key: 'highrev', label: 'Revenue \u2265 \u20b93,000', test: p => p.revenue >= 3000 },
 ];
 
 function renderSection1Scale() {
   const items = actionPlan.scaleStyles;
-  return `
-    <div class="action-section">
-      <div class="section-bar">
-        <div class="section-num n-scale">1</div>
-        <div class="section-title">Scale Style IDs</div>
-        <div class="section-count">${items.length} styles</div>
-      </div>
-      ${directiveTableHtml('scale-table', items, SCALE_COLUMNS, `No styles currently clear the SCALE bar (ROAS \u2265 8x, 2+ orders, \u20b9500+ revenue).`, 'Search Style ID or product name\u2026')}
-    </div>
+  const headerHtml = `
+    <div class="section-num n-scale">1</div>
+    <div class="section-title">Scale Style IDs</div>
+    <div class="section-count">${items.length} styles</div>
   `;
+  const bodyHtml = directiveTableHtml('scale-table', items, SCALE_COLUMNS, `No styles currently clear the SCALE bar (ROAS \u2265 8x, 2+ orders, \u20b9500+ revenue).`, 'Search Style ID or product name\u2026', SCALE_QUICK_FILTERS);
+  const summary = `${items.length} styles ready to scale, led by ${items[0] ? truncName(stripBrandPrefix(items[0].name), 40) : ''} at ${items[0] ? items[0].roas.toFixed(2) : '0'}x ROAS. Click to review.`;
+  return collapsibleSectionWrap('scale-section', headerHtml, bodyHtml, items.length, summary);
 }
 
 // ============================================================
@@ -224,30 +348,39 @@ const PAUSE_COLUMNS = [
   { key: 'name', label: 'Product', render: p => `<td class="dt-name">${truncName(stripBrandPrefix(p.name), 60)}</td>` },
   { key: 'adgroup', label: 'Brand', render: p => `<td><span class="dt-adgroup">${p.adgroup}</span></td>` },
   { key: 'spend', label: 'Spend', num: true, defaultDir: 'desc', render: p => `<td class="num-col">${fmtINR(p.spend)}</td>` },
-  { key: 'clicks', label: 'Clicks', num: true, render: p => `<td class="num-col">${Math.round(p.clicks)}</td>` },
-  { key: 'orders', label: 'Orders', num: true, render: p => `<td class="num-col">${p.orders}</td>` },
-  { key: 'revenue', label: 'Revenue', num: true, render: p => `<td class="num-col">${fmtINR(p.revenue)}</td>` },
+  { key: 'clicks', label: 'Clicks', num: true, render: p => `<td class="num-col dim">${Math.round(p.clicks)}</td>` },
+  { key: 'orders', label: 'Orders', num: true, render: p => `<td class="num-col dim">${p.orders}</td>` },
+  { key: 'revenue', label: 'Revenue', num: true, render: p => `<td class="num-col dim">${fmtINR(p.revenue)}</td>` },
   { key: 'roas', label: 'ROAS', num: true, render: p => `<td class="num-col dt-roas pause">${p.roas.toFixed(2)}x</td>` },
   { key: 'reason', label: 'Reason', render: p => `<td class="dt-reason">${p.reason}</td>` },
 ];
 
+const PAUSE_QUICK_FILTERS = [
+  { key: 'highspend', label: 'Spend \u2265 \u20b9200', test: p => p.spend >= 200 },
+  { key: 'zeroorders', label: 'Zero orders', test: p => p.orders === 0 },
+];
+
 function renderSection2Pause() {
   const items = actionPlan.pauseStyles;
-  return `
-    <div class="action-section">
-      <div class="section-bar">
-        <div class="section-num n-pause">2</div>
-        <div class="section-title">Pause Style IDs</div>
-        <div class="section-count">${items.length} styles \u00b7 ${fmtINR(actionPlan.totalPauseSpend)} at risk</div>
-      </div>
-      ${directiveTableHtml('pause-table', items, PAUSE_COLUMNS, `No styles currently trigger a PAUSE condition. Nothing to cut today.`, 'Search Style ID or product name\u2026')}
-    </div>
+  const headerHtml = `
+    <div class="section-num n-pause">2</div>
+    <div class="section-title">Pause Style IDs</div>
+    <div class="section-count">${items.length} styles \u00b7 ${fmtINR(actionPlan.totalPauseSpend)} at risk</div>
   `;
+  const bodyHtml = directiveTableHtml('pause-table', items, PAUSE_COLUMNS, `No styles currently trigger a PAUSE condition. Nothing to cut today.`, 'Search Style ID or product name\u2026', PAUSE_QUICK_FILTERS);
+  const summary = `${items.length} styles flagged to pause, totaling ${fmtINR(actionPlan.totalPauseSpend)} in recoverable spend. Click to review.`;
+  return collapsibleSectionWrap('pause-section', headerHtml, bodyHtml, items.length, summary);
 }
 
 function wireSection1And2Tables() {
-  if (actionPlan.scaleStyles.length) wireDirectiveTable('scale-table', actionPlan.scaleStyles, SCALE_COLUMNS, 'dt-row scale');
-  if (actionPlan.pauseStyles.length) wireDirectiveTable('pause-table', actionPlan.pauseStyles, PAUSE_COLUMNS, 'dt-row pause');
+  if (actionPlan.scaleStyles.length) {
+    wireDirectiveTable('scale-table', actionPlan.scaleStyles, SCALE_COLUMNS, 'dt-row scale', SCALE_QUICK_FILTERS);
+    wireCollapsibleSection('scale-section');
+  }
+  if (actionPlan.pauseStyles.length) {
+    wireDirectiveTable('pause-table', actionPlan.pauseStyles, PAUSE_COLUMNS, 'dt-row pause', PAUSE_QUICK_FILTERS);
+    wireCollapsibleSection('pause-section');
+  }
 }
 
 // ============================================================
