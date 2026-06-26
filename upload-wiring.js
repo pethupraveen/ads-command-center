@@ -110,6 +110,7 @@ document.getElementById('process-btn').addEventListener('click', async () => {
     await saveStored(STORE_KEYS.meta, { lastUpload: new Date().toISOString() });
 
     actionPlan = computeActionPlan(rawDailyRows, rawProductRows, rawPlacementRows);
+    kpiData = deriveKpiData(rawDailyRows, rawProductRows, rawPlacementRows);
     lastGeneratedAt = new Date();
 
     renderAll();
@@ -148,7 +149,7 @@ document.getElementById('clear-data-btn').addEventListener('click', async () => 
   } catch (e) { /* keys may not exist yet */ }
 
   rawDailyRows = []; rawProductRows = []; rawPlacementRows = [];
-  actionPlan = null; lastGeneratedAt = null;
+  actionPlan = null; kpiData = null; lastGeneratedAt = null;
   renderAll();
 
   const feedback = document.getElementById('upload-feedback');
@@ -196,6 +197,7 @@ async function boot() {
 
     if (rawProductRows.length) {
       actionPlan = computeActionPlan(rawDailyRows, rawProductRows, rawPlacementRows);
+      kpiData = deriveKpiData(rawDailyRows, rawProductRows, rawPlacementRows);
       lastGeneratedAt = storedMeta && storedMeta.lastUpload ? new Date(storedMeta.lastUpload) : new Date();
     }
     renderAll();
@@ -221,4 +223,5 @@ document.getElementById('refresh-btn').addEventListener('click', () => {
   boot().finally(() => { btn.disabled = false; btn.classList.remove('spinning'); });
 });
 
+wireTabSwitcher();
 boot();

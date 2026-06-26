@@ -3,7 +3,9 @@
 // ============================================================
 let rawDailyRows = [], rawProductRows = [], rawPlacementRows = [];
 let actionPlan = null;
+let kpiData = null;
 let lastGeneratedAt = null;
+let activeTab = 'action'; // 'action' | 'kpi'
 
 const fmtINR = (n) => '₹' + Math.round(n).toLocaleString('en-IN');
 const fmtINRFull = (n, d = 0) => '₹' + Number(n).toLocaleString('en-IN', { maximumFractionDigits: d, minimumFractionDigits: d });
@@ -24,31 +26,46 @@ function formatTimestamp(d) {
 }
 
 // ============================================================
-// MAIN RENDER — builds the entire #main-wrap from scratch
+// TAB SWITCHER WIRING — runs once at startup
+// ============================================================
+function wireTabSwitcher() {
+  document.querySelectorAll('#main-tab-switcher .tab-btn').forEach(btn => {
+    btn.addEventListener('click', () => {
+      activeTab = btn.dataset.tab;
+      document.querySelectorAll('#main-tab-switcher .tab-btn').forEach(b => b.classList.remove('active'));
+      btn.classList.add('active');
+      renderAll();
+    });
+  });
+}
+
+// ============================================================
+// MAIN RENDER — delegates to active tab
 // ============================================================
 function renderAll() {
   const wrap = document.getElementById('main-wrap');
   document.getElementById('brief-timestamp').textContent = lastGeneratedAt ? formatTimestamp(lastGeneratedAt) : '\u2014';
+  document.getElementById('download-btn').disabled = !actionPlan || !rawProductRows.length;
+  updateDataStatusBar();
 
+  if (activeTab === 'kpi') {
+    renderKpiDashboard();
+    return;
+  }
+
+  // ---- Action Plan tab ----
   if (!actionPlan || !rawProductRows.length) {
     wrap.innerHTML = `
       <div class="empty-state">
         <h2>No brief generated yet</h2>
-        <p>Upload today's Daily, Product &amp; Placement reports to generate today's action plan \u2014 scale calls, pause calls, and budget moves, computed fresh from the data.</p>
+        <p>Upload today\'s Daily, Product &amp; Placement reports to generate today\'s action plan \u2014 scale calls, pause calls, and budget moves, computed fresh from the data.</p>
       </div>
     `;
-    document.getElementById('download-btn').disabled = true;
-    updateDataStatusBar();
     return;
   }
 
-  document.getElementById('download-btn').disabled = false;
-
+  tableStates = {};
   const s = actionPlan.summary;
-  const gapDirection = s.projectedRoas >= s.currentRoas ? 'improves' : 'changes';
-
-  tableStates = {}; // reset sort/search state on every fresh brief
-
   wrap.innerHTML = `
     ${renderBriefingHeader(s)}
     ${renderSection1Scale()}
@@ -59,10 +76,7 @@ function renderAll() {
     ${renderSection6Reallocation()}
     <div class="footer">Generated from Consolidated Daily, Product &amp; Placement reports &middot; All figures in \u20b9</div>
   `;
-
   wireSection1And2Tables();
-
-  updateDataStatusBar();
 }
 
 // ============================================================
